@@ -1,6 +1,7 @@
 ﻿# R语言学习教程（从入门到蛋白结构分析项目）
 
 这是一套按能力递进设计的 R 语言学习教程，覆盖：
+- 预备节：Git 与仓库
 - 语言介绍
 - 安装与配置
 - IDE界面与工程化习惯
@@ -21,17 +22,18 @@
 
 ## 章节目录
 
-1. `01_intro_to_r`
-2. `02_installation_and_setup`
-3. `03_ide_and_interface`
-4. `04_data_types`
-5. `05_basic_syntax`
-6. `06_data_processing`
-7. `07_regression_and_classification`
-8. `08_simulation_and_visualization`
-9. `09_case_studies`
-10. `10_ai_collaborative_programming`
-11. `11_capstone_protein_structure`
+1. `00_prep_git_and_repo`
+2. `01_intro_to_r`
+3. `02_installation_and_setup`
+4. `03_ide_and_interface`
+5. `04_data_types`
+6. `05_basic_syntax`
+7. `06_data_processing`
+8. `07_regression_and_classification`
+9. `08_simulation_and_visualization`
+10. `09_case_studies`
+11. `10_ai_collaborative_programming`
+12. `11_capstone_protein_structure`
 
 ## 产出物目标
 
