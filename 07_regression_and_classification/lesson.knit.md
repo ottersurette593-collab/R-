@@ -1,0 +1,416 @@
+---
+title: "第07节：回归与分类"
+author: "HuangJIn"
+date: "2026-03-28"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    df_print: paged
+---
+
+
+
+# 学习目标
+
+- 理解监督学习的完整流程（拆分、训练、预测、评估）  
+- 掌握线性回归与逻辑回归的基础建模方法  
+- 会计算并解释常见指标（RMSE、R2、准确率、召回率等）  
+- 能通过训练/测试表现判断是否可能过拟合  
+
+# 1. 回归与分类的区别
+
+监督学习核心是：给定特征 `X`，预测目标 `y`。
+
+1. 回归：`y` 是连续数值（如房价、销售额）  
+2. 分类：`y` 是类别标签（如是/否、A/B/C）  
+
+本节我们使用：
+
+- 回归数据：`mtcars`（预测 `mpg`）  
+  用汽车特征（如 wt, hp, cyl,车重,马力,气缸数）去预测油耗 mpg（连续数值），这是回归任务。
+- 分类数据：`iris`（预测是否 `setosa`）  
+  用花萼/花瓣特征（长度、宽度）判断一朵花是不是 setosa（是/否，0/1），这是二分类任务。          
+
+# 2. 先准备评估函数 
+
+
+``` r
+rmse <- function(actual, pred) {
+  sqrt(mean((actual - pred)^2))
+}
+
+mae <- function(actual, pred) {
+  mean(abs(actual - pred))
+}
+
+r2_score <- function(actual, pred) {
+  1 - sum((actual - pred)^2) / sum((actual - mean(actual))^2)
+}
+
+calc_auc <- function(y_true, y_prob) {
+  # 计算二分类 AUC（Area Under ROC Curve）
+  # y_true: 真实标签，必须是 0/1
+  # y_prob: 模型输出的“正类概率”
+  ranks <- rank(y_prob, ties.method = "average")
+
+  # 正负样本数量
+  n_pos <- sum(y_true == 1)
+  n_neg <- sum(y_true == 0)
+
+  # 如果全是正样本或全是负样本，AUC 无法定义
+  if (n_pos == 0 || n_neg == 0) return(NA_real_)
+
+  # AUC 公式（基于正样本秩和）
+  # 取值范围通常在 [0, 1]：
+  # 0.5 约等于随机猜测，越接近 1 区分能力越强
+  (sum(ranks[y_true == 1]) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+}
+```
+
+# 3. 线性回归（Regression）
+
+## 3.1 划分训练集/测试集
+
+
+``` r
+set.seed(2026)
+df_reg <- mtcars
+
+idx <- sample(seq_len(nrow(df_reg)), size = round(0.7 * nrow(df_reg)))
+train_reg <- df_reg[idx, ]
+test_reg <- df_reg[-idx, ]
+
+c(train_rows = nrow(train_reg), test_rows = nrow(test_reg))
+```
+
+```
+## train_rows  test_rows 
+##         22         10
+```
+
+## 3.2 训练模型与查看系数
+
+
+``` r
+fit_lm <- lm(mpg ~ wt + hp + cyl, data = train_reg)
+summary(fit_lm)
+```
+
+```
+## 
+## Call:
+## lm(formula = mpg ~ wt + hp + cyl, data = train_reg)
+## 
+## Residuals:
+##     Min      1Q  Median      3Q     Max 
+## -3.1811 -1.3910 -0.3685  1.0762  3.6519 
+## 
+## Coefficients:
+##              Estimate Std. Error t value Pr(>|t|)    
+## (Intercept) 36.825494   1.807048  20.379 6.97e-14 ***
+## wt          -3.210748   0.740335  -4.337 0.000397 ***
+## hp          -0.004339   0.016348  -0.265 0.793732    
+## cyl         -0.952262   0.544399  -1.749 0.097287 .  
+## ---
+## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+## 
+## Residual standard error: 2.079 on 18 degrees of freedom
+## Multiple R-squared:  0.8762,	Adjusted R-squared:  0.8556 
+## F-statistic: 42.48 on 3 and 18 DF,  p-value: 2.264e-08
+```
+
+## 3.3 测试集预测与评估
+
+
+``` r
+pred_reg <- predict(fit_lm, newdata = test_reg)
+
+lm_metrics <- data.frame(
+  metric = c("RMSE", "MAE", "R2"),
+  value = c(
+    rmse(test_reg$mpg, pred_reg),
+    mae(test_reg$mpg, pred_reg),
+    r2_score(test_reg$mpg, pred_reg)
+  )
+)
+
+lm_metrics
+```
+
+```
+##   metric     value
+## 1   RMSE 3.5240253
+## 2    MAE 2.8040356
+## 3     R2 0.7314423
+```
+
+
+``` r
+plot_df <- data.frame(actual = test_reg$mpg, pred = pred_reg)
+
+plot(
+  plot_df$actual, plot_df$pred,
+  pch = 19, col = "#1565C0",
+  xlab = "Actual MPG", ylab = "Predicted MPG",
+  main = "线性回归：真实值 vs 预测值"
+)
+abline(0, 1, col = "red", lwd = 2)
+```
+
+![plot of chunk plot-lm-pred](figure/plot-lm-pred-1.png)
+
+解释：
+
+- 点越靠近红线（`y = x`）说明预测越接近真实值  
+- `RMSE/MAE` 越小越好，`R2` 越接近 1 越好  
+
+# 4. 逻辑回归（Classification）
+
+## 4.1 构造二分类任务
+
+
+``` r
+df_cls <- iris
+df_cls$target <- ifelse(df_cls$Species == "setosa", 1, 0)
+df_cls$Species <- NULL
+
+set.seed(2026)
+idx_cls <- sample(seq_len(nrow(df_cls)), size = round(0.7 * nrow(df_cls)))
+train_cls <- df_cls[idx_cls, ]
+test_cls <- df_cls[-idx_cls, ]
+
+c(train_rows = nrow(train_cls), test_rows = nrow(test_cls))
+```
+
+```
+## train_rows  test_rows 
+##        105         45
+```
+
+## 4.2 训练逻辑回归
+
+
+``` r
+fit_glm <- glm(
+  target ~ Sepal.Length + Sepal.Width + Petal.Length + Petal.Width,
+  data = train_cls,
+  family = binomial
+)
+
+summary(fit_glm)
+```
+
+```
+## 
+## Call:
+## glm(formula = target ~ Sepal.Length + Sepal.Width + Petal.Length + 
+##     Petal.Width, family = binomial, data = train_cls)
+## 
+## Coefficients:
+##                Estimate Std. Error z value Pr(>|z|)
+## (Intercept)     -20.869 732224.949       0        1
+## Sepal.Length     12.958 184422.168       0        1
+## Sepal.Width       7.871  76617.696       0        1
+## Petal.Length    -21.247 164851.389       0        1
+## Petal.Width     -20.789 221803.483       0        1
+## 
+## (Dispersion parameter for binomial family taken to be 1)
+## 
+##     Null deviance: 1.2912e+02  on 104  degrees of freedom
+## Residual deviance: 2.4511e-09  on 100  degrees of freedom
+## AIC: 10
+## 
+## Number of Fisher Scoring iterations: 25
+```
+
+## 4.3 预测概率并转类别
+
+
+``` r
+prob_cls <- predict(fit_glm, newdata = test_cls, type = "response")
+pred_cls <- ifelse(prob_cls >= 0.5, 1, 0)
+
+head(data.frame(prob = prob_cls, pred = pred_cls, actual = test_cls$target))
+```
+
+```
+##    prob pred actual
+## 2     1    1      1
+## 6     1    1      1
+## 7     1    1      1
+## 10    1    1      1
+## 11    1    1      1
+## 13    1    1      1
+```
+
+## 4.4 混淆矩阵与指标
+
+
+``` r
+cm <- table(
+  Predicted = factor(pred_cls, levels = c(0, 1)),
+  Actual = factor(test_cls$target, levels = c(0, 1))
+)
+cm
+```
+
+```
+##          Actual
+## Predicted  0  1
+##         0 27  0
+##         1  0 18
+```
+
+``` r
+tn <- cm["0", "0"]
+fp <- cm["1", "0"]
+fn <- cm["0", "1"]
+tp <- cm["1", "1"]
+
+accuracy <- (tp + tn) / sum(cm)
+precision <- ifelse(tp + fp == 0, NA, tp / (tp + fp))
+recall <- ifelse(tp + fn == 0, NA, tp / (tp + fn))
+f1 <- ifelse(is.na(precision) || is.na(recall) || (precision + recall) == 0,
+             NA, 2 * precision * recall / (precision + recall))
+auc <- calc_auc(test_cls$target, prob_cls)
+
+cls_metrics <- data.frame(
+  metric = c("Accuracy", "Precision", "Recall", "F1", "AUC"),
+  value = c(accuracy, precision, recall, f1, auc)
+)
+
+cls_metrics
+```
+
+```
+##      metric value
+## 1  Accuracy     1
+## 2 Precision     1
+## 3    Recall     1
+## 4        F1     1
+## 5       AUC     1
+```
+
+## 4.5 ROC 曲线（手工计算）
+
+
+``` r
+thresholds <- seq(0, 1, by = 0.02)
+roc_df <- data.frame(th = thresholds, tpr = NA_real_, fpr = NA_real_)
+
+for (i in seq_along(thresholds)) {
+  th <- thresholds[i]
+  pred <- ifelse(prob_cls >= th, 1, 0)
+
+  tp_i <- sum(pred == 1 & test_cls$target == 1)
+  fp_i <- sum(pred == 1 & test_cls$target == 0)
+  fn_i <- sum(pred == 0 & test_cls$target == 1)
+  tn_i <- sum(pred == 0 & test_cls$target == 0)
+
+  tpr <- ifelse(tp_i + fn_i == 0, 0, tp_i / (tp_i + fn_i))
+  fpr <- ifelse(fp_i + tn_i == 0, 0, fp_i / (fp_i + tn_i))
+
+  roc_df$tpr[i] <- tpr
+  roc_df$fpr[i] <- fpr
+}
+
+plot(
+  roc_df$fpr, roc_df$tpr, type = "l", lwd = 2, col = "#2E7D32",
+  xlab = "False Positive Rate", ylab = "True Positive Rate",
+  main = sprintf("ROC Curve (AUC = %.3f)", auc)
+)
+abline(0, 1, lty = 2, col = "gray50")
+```
+
+![plot of chunk roc-manual](figure/roc-manual-1.png)
+
+# 5. 训练误差 vs 测试误差（过拟合直觉）
+
+
+``` r
+# 回归：训练集与测试集 RMSE 对比
+pred_train_reg <- predict(fit_lm, newdata = train_reg)
+pred_test_reg <- predict(fit_lm, newdata = test_reg)
+
+overfit_reg <- data.frame(
+  set = c("train", "test"),
+  rmse = c(rmse(train_reg$mpg, pred_train_reg), rmse(test_reg$mpg, pred_test_reg))
+)
+overfit_reg
+```
+
+```
+##     set     rmse
+## 1 train 1.880681
+## 2  test 3.524025
+```
+
+
+``` r
+barplot(
+  overfit_reg$rmse,
+  names.arg = overfit_reg$set,
+  col = c("#1565C0", "#EF6C00"),
+  main = "回归模型：训练/测试 RMSE 对比",
+  ylab = "RMSE"
+)
+```
+
+![plot of chunk overfit-plot](figure/overfit-plot-1.png)
+
+若训练误差明显小于测试误差，通常提示过拟合风险上升。
+
+# 6. 选择特征组合（简单模型比较）
+
+
+``` r
+fit_lm_a <- lm(mpg ~ wt + hp, data = train_reg)
+fit_lm_b <- lm(mpg ~ wt + hp + cyl + disp, data = train_reg)
+
+pred_a <- predict(fit_lm_a, newdata = test_reg)
+pred_b <- predict(fit_lm_b, newdata = test_reg)
+
+compare_tbl <- data.frame(
+  model = c("A: wt+hp", "B: wt+hp+cyl+disp"),
+  test_rmse = c(rmse(test_reg$mpg, pred_a), rmse(test_reg$mpg, pred_b)),
+  test_r2 = c(r2_score(test_reg$mpg, pred_a), r2_score(test_reg$mpg, pred_b))
+)
+
+compare_tbl
+```
+
+```
+##               model test_rmse   test_r2
+## 1          A: wt+hp  3.572404 0.7240180
+## 2 B: wt+hp+cyl+disp  3.426440 0.7461098
+```
+
+建议：不要只看“特征更多”，要看测试集指标是否真的变好。
+
+# 7. 课堂练习
+
+## 基础练习
+
+1. 用 `mtcars` 完成一次 `mpg ~ wt + hp` 线性回归并计算 RMSE。  
+2. 用 `iris` 做 `setosa` 二分类逻辑回归，计算准确率和召回率。  
+3. 调整分类阈值（如 0.3、0.7）比较指标变化。  
+
+## 进阶练习
+
+1. 在回归任务中比较两组特征组合，并解释差异。  
+2. 在分类任务中画 ROC 曲线并比较不同模型的 AUC。  
+3. 写一个通用函数 `eval_binary(actual, prob, threshold)` 返回核心指标。  
+
+# 8. 章末自检
+
+- 我能说清回归和分类的输入输出差异  
+- 我会用 `lm()` 和 `glm(..., family = binomial)` 训练基础模型  
+- 我能解释 RMSE、R2、Accuracy、Recall、AUC  
+- 我知道为什么要使用训练集/测试集评估泛化能力  
+
+# 9. 下一节预告
+
+下一节进入数据可视化：图形语法、图表表达与高质量输出。

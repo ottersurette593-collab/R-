@@ -9,7 +9,7 @@ if (length(missing_pkgs) > 0) {
 invisible(lapply(required_pkgs, library, character.only = TRUE))
 
 pdb_id <- "1ubq"
-output_dir <- file.path("11_capstone_protein_structure", "output")
+output_dir <- file.path("13_capstone_protein_structure", "output")
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # 1) Read protein structure

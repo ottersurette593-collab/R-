@@ -1,0 +1,273 @@
+---
+title: "第06节：数据处理"
+author: "HuangJIn"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# 学习目标
+
+- 掌握“读入 -> 清洗 -> 变换 -> 汇总 -> 输出”的完整流程  
+- 熟练使用 `dplyr` 和 `tidyr` 的核心动词  
+- 能解释 `left_join` 后 `NA` 的来源  
+- 能写出可复用的数据处理管道函数  
+
+# 1. 数据处理总流程
+
+一条稳定的数据处理链通常分 5 步：
+
+1. 读入数据（`read_csv`）  
+2. 质量检查（缺失值、重复值、类型）  
+3. 清洗与变换（`mutate/filter/case_when`）  
+4. 分组汇总（`group_by/summarise`）  
+5. 输出结果（表格/图表/文件）  
+
+# 2. 准备示例数据并读入
+
+```{r load-packages}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(ggplot2)
+})
+```
+
+```{r create-and-read-csv}
+tmp_csv <- file.path(tempdir(), "sales_demo.csv")
+
+sales_raw <- data.frame(
+  order_id = c(1001, 1002, 1003, 1003, 1004, 1005, 1006, 1007, 1008, 1009),
+  region = c("East", "West", "East", "East", "North", "South", "West", "South", "East", "North"),
+  product = c("A", "B", "A", "A", "C", "B", "A", "C", "B", "A"),
+  qty = c(3, 2, NA, NA, 5, 4, 2, 3, 1, 6),
+  price = c(120, 200, 120, 120, NA, 210, 130, 310, 220, 140),
+  order_date = c("2026-01-03", "2026-01-05", "2026-01-08", "2026-01-08", "2026-01-12",
+                 "2026-01-15", "2026-01-17", "2026-01-20", "2026-01-25", "2026-01-27"),
+  stringsAsFactors = FALSE
+)
+
+write_csv(sales_raw, tmp_csv)
+sales <- read_csv(tmp_csv, show_col_types = FALSE)
+
+sales
+```
+
+# 3. 数据质量检查
+
+## 3.1 结构与基础统计
+
+```{r quality-structure}
+glimpse(sales)
+summary(sales)
+```
+
+## 3.2 缺失值与重复值
+
+```{r quality-na-dup}
+na_count <- colSums(is.na(sales))
+dup_count <- sum(duplicated(sales))
+
+na_count
+dup_count
+```
+
+```{r na-barplot, fig.width=7, fig.height=4.5}
+barplot(
+  na_count,
+  col = "#C62828",
+  main = "各列缺失值数量",
+  ylab = "NA Count"
+)
+```
+
+# 4. 清洗：去重、缺失处理、类型矫正
+
+```{r cleaning-steps}
+sales_clean <- sales %>%
+  distinct() %>%  # 去掉完全重复行
+  mutate(
+    order_date = as.Date(order_date),
+    qty = if_else(is.na(qty), median(qty, na.rm = TRUE), qty),
+    price = if_else(is.na(price), median(price, na.rm = TRUE), price)
+  )
+
+sales_clean
+```
+
+```{r compare-row-count}
+data.frame(
+  stage = c("raw", "clean"),
+  rows = c(nrow(sales), nrow(sales_clean))
+)
+```
+
+# 5. 变换：新增字段与分类标签
+
+```{r mutate-casewhen}
+sales_feature <- sales_clean %>%
+  mutate(
+    amount = qty * price,
+    month = format(order_date, "%Y-%m"),
+    order_level = case_when(
+      amount >= 900 ~ "high",
+      amount >= 500 ~ "mid",
+      TRUE ~ "low"
+    )
+  )
+
+sales_feature
+```
+
+# 6. 汇总：分组统计
+
+```{r group-summary}
+region_summary <- sales_feature %>%
+  group_by(region) %>%
+  summarise(
+    n_orders = n(),
+    total_amount = sum(amount),
+    avg_amount = mean(amount),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_amount))
+
+region_summary
+```
+
+```{r summary-plot, fig.width=7, fig.height=4.5}
+ggplot(region_summary, aes(x = reorder(region, total_amount), y = total_amount, fill = region)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(
+    title = "各区域销售额汇总",
+    x = "Region",
+    y = "Total Amount"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+# 7. 合并：`left_join` 与 `inner_join`
+
+```{r join-demo}
+region_manager <- tibble::tibble(
+  region = c("East", "West", "South"),  # 故意缺少 North
+  manager = c("Alice", "Bob", "Carol")
+)
+
+left_join_result <- sales_feature %>%
+  left_join(region_manager, by = "region")
+
+inner_join_result <- sales_feature %>%
+  inner_join(region_manager, by = "region")
+
+left_join_result
+inner_join_result
+c(
+  left_join_rows = nrow(left_join_result),
+  inner_join_rows = nrow(inner_join_result)
+)
+```
+
+```{r left-join-na}
+left_join_result %>%
+  filter(is.na(manager)) %>%
+  select(order_id, region, amount, manager)
+```
+
+解释：
+
+- `left_join` 保留左表全部行，匹配不到会出现 `NA`  
+- `inner_join` 只保留双方都能匹配上的行  
+
+# 8. 宽表与长表转换
+
+```{r pivot-demo}
+monthly_region <- sales_feature %>%
+  group_by(month, region) %>%
+  summarise(total_amount = sum(amount), .groups = "drop")
+
+wide_tbl <- monthly_region %>%
+  pivot_wider(names_from = region, values_from = total_amount, values_fill = 0)
+
+long_tbl <- wide_tbl %>%
+  pivot_longer(cols = -month, names_to = "region", values_to = "total_amount")
+
+wide_tbl
+long_tbl
+```
+
+什么时候用：
+
+1. 便于人阅读或导出报表：宽表  
+2. 便于建模和可视化：长表  
+
+# 9. 封装一个可复用清洗函数
+
+```{r pipeline-function}
+clean_sales_data <- function(df) {
+  stopifnot(is.data.frame(df))
+  required_cols <- c("order_id", "region", "product", "qty", "price", "order_date")
+  miss_cols <- setdiff(required_cols, names(df))
+  if (length(miss_cols) > 0) stop("Missing columns: ", paste(miss_cols, collapse = ", "))
+
+  df %>%
+    distinct() %>%
+    mutate(
+      order_date = as.Date(order_date),
+      qty = if_else(is.na(qty), median(qty, na.rm = TRUE), qty),
+      price = if_else(is.na(price), median(price, na.rm = TRUE), price),
+      amount = qty * price
+    )
+}
+
+sales_func <- clean_sales_data(sales)
+head(sales_func, 3)
+```
+
+# 10. 输出结果文件（示例）
+
+```{r export-demo, eval=FALSE}
+dir.create("output", showWarnings = FALSE)
+write_csv(region_summary, "output/region_summary.csv")
+ggsave("output/region_summary.png", width = 7, height = 4.5, dpi = 300)
+```
+
+# 11. 课堂练习
+
+## 基础练习
+
+1. 用 `iris` 按 `Species` 计算每列均值。  
+2. 增加一列 `sepal_ratio = Sepal.Length / Sepal.Width`。  
+3. 检查是否有缺失值并输出每列 NA 数量。  
+
+## 进阶练习
+
+1. 构造两个表（主表 + 维度表），分别做 `left_join` 和 `inner_join`。  
+2. 找出 `left_join` 后产生 `NA` 的记录并解释原因。  
+3. 将结果从长表转宽表，再转回长表，比较行数是否一致。  
+
+# 12. 章末自检
+
+- 我能写出 5 步以内的数据清洗管道  
+- 我能解释 `mutate/filter/group_by/summarise` 的职责  
+- 我能判断何时使用 `left_join` 或 `inner_join`  
+- 我能在宽表和长表之间转换并理解场景  
+
+# 13. 下一节预告
+
+下一节我们会学习回归与分类：从建模、评估到结果解释的完整流程。

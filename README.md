@@ -8,7 +8,9 @@
 - 数据类型与基础语法
 - 数据处理
 - 回归与分类
-- 仿真与绘图
+- 数据可视化
+- 统计仿真
+- 生物统计常见数据、问题、模型与方法
 - 综合案例
 - AI 协作编程
 - 结课项目：蛋白结构分析与绘图
@@ -30,10 +32,12 @@
 6. `05_basic_syntax`
 7. `06_data_processing`
 8. `07_regression_and_classification`
-9. `08_simulation_and_visualization`
-10. `09_case_studies`
-11. `10_ai_collaborative_programming`
-12. `11_capstone_protein_structure`
+9. `08_visualization`
+10. `09_simulation`
+11. `10_biostatistics_fundamentals`
+12. `11_case_studies`
+13. `12_ai_collaborative_programming`
+14. `13_capstone_protein_structure`
 
 ## 产出物目标
 
