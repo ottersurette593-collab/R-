@@ -1,0 +1,432 @@
+﻿---
+title: "第14节：统计入门（假设检验与接受域分析）"
+author: "HuangJIn"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+---
+
+# 学习目标
+
+- 理解假设检验的数学逻辑：统计量分布、接受域、拒绝域
+- 掌握单样本 t、双样本 Welch t、单比例与两比例检验的判定方法
+- 能基于“统计量 vs 临界值”做规范结论，而非只机械看 p 值
+- 理解样本量对检验显著性的影响
+
+# 1. 从样本到检验统计量
+
+统计推断的核心是：在原假设 \(H_0\) 成立时，检验统计量 \(T(X)\) 的分布已知。  
+然后比较“观测统计量”与“临界值”，判断其是否落入拒绝域。
+
+## 1.1 样本均值的抽样分布
+
+设 \(X_1,\dots,X_n\) 独立同分布，
+\[
+E(X_i)=\mu,\quad Var(X_i)=\sigma^2.
+\]
+样本均值 \(\bar X\) 满足
+\[
+E(\bar X)=\mu,\quad Var(\bar X)=\frac{\sigma^2}{n}.
+\]
+若总体正态或样本量足够大，\(\bar X\) 的分布可近似正态。
+
+```{r sampling-distribution-plot, fig.width=7.2, fig.height=4.6}
+set.seed(20260412)
+n_grid <- c(5, 20, 80)
+sim_means <- lapply(n_grid, function(n) replicate(4000, mean(rnorm(n, mean = 70, sd = 10))))
+cols <- c("#1b9e77", "#d95f02", "#7570b3")
+
+plot(
+  density(sim_means[[1]]), col = cols[1], lwd = 2,
+  main = "样本量越大，样本均值分布越集中",
+  xlab = "样本均值",
+  ylim = c(0, max(sapply(sim_means, function(x) max(density(x)$y))) * 1.1)
+)
+for (i in 2:length(sim_means)) lines(density(sim_means[[i]]), col = cols[i], lwd = 2)
+abline(v = 70, lty = 2, col = "gray35")
+legend("topright", legend = paste0("n = ", n_grid), col = cols, lwd = 2, bty = "n")
+```
+
+# 2. 假设检验与接受域
+
+## 2.1 基本定义
+
+- 原假设：\(H_0\)
+- 备择假设：\(H_1\)
+- 显著性水平：\(\alpha\)
+- 拒绝域：使 \(H_0\) 被拒绝的统计量取值集合
+- 接受域：拒绝域的补集
+
+决策规则：若 \(T_{obs}\in R\)（拒绝域），拒绝 \(H_0\)；否则不拒绝 \(H_0\)。
+
+## 2.2 双侧正态检验的接受域示意
+
+双侧 \(\alpha=0.05\) 时，临界值为 \(\pm z_{0.975}\)。
+\[
+A = [-z_{0.975}, z_{0.975}],\quad R = (-\infty,-z_{0.975})\cup(z_{0.975},\infty).
+\]
+
+```{r pvalue-rejection-region, fig.width=7.2, fig.height=4.6}
+alpha <- 0.05
+z_obs <- 2.05
+x <- seq(-4, 4, length.out = 2000)
+y <- dnorm(x)
+crit <- qnorm(1 - alpha / 2)
+
+plot(x, y, type = "l", lwd = 2, col = "#2c3e50",
+     main = "标准正态下的接受域与拒绝域",
+     xlab = "z 值", ylab = "密度")
+abline(v = c(-crit, crit), lty = 2, col = "#e74c3c", lwd = 2)
+abline(v = c(-z_obs, z_obs), lty = 3, col = "#1f78b4", lwd = 2)
+
+idx_left <- which(x <= -crit)
+idx_right <- which(x >= crit)
+polygon(c(x[idx_left], rev(x[idx_left])), c(y[idx_left], rep(0, length(idx_left))),
+        col = adjustcolor("#e74c3c", alpha.f = 0.25), border = NA)
+polygon(c(x[idx_right], rev(x[idx_right])), c(y[idx_right], rep(0, length(idx_right))),
+        col = adjustcolor("#e74c3c", alpha.f = 0.25), border = NA)
+legend(
+  "topright",
+  legend = c(paste0("临界值: ±", round(crit, 3)), "红色区域: 拒绝域", "中间区域: 接受域"),
+  lty = c(2, NA, NA), lwd = c(2, NA, NA), pch = c(NA, 15, 15),
+  col = c("#e74c3c", adjustcolor("#e74c3c", alpha.f = 0.5), "gray70"),
+  pt.cex = 1.4, bty = "n"
+)
+```
+
+# 3. 单样本 t 检验
+
+问题：班级平均分是否高于 70？
+\[
+H_0:\mu=70,\quad H_1:\mu>70,
+\quad T=\frac{\bar X-70}{S/\sqrt n}\sim t_{n-1}.
+\]
+
+接受域与拒绝域（右侧检验）：
+\[
+A=(-\infty, t_{1-\alpha,n-1}],\quad R=(t_{1-\alpha,n-1},\infty).
+\]
+
+```{r one-sample-example}
+set.seed(42)
+score <- round(rnorm(40, mean = 74, sd = 8), 1)
+
+alpha <- 0.05
+n1 <- length(score)
+mu0 <- 70
+xbar <- mean(score)
+s <- sd(score)
+t_obs <- (xbar - mu0) / (s / sqrt(n1))
+t_crit <- qt(1 - alpha, df = n1 - 1)
+p_val <- pt(t_obs, df = n1 - 1, lower.tail = FALSE)
+
+one_sample_result <- data.frame(
+  n = n1,
+  mean = round(xbar, 3),
+  t_obs = round(t_obs, 3),
+  t_crit = round(t_crit, 3),
+  p_value = signif(p_val, 4),
+  decision = ifelse(t_obs > t_crit, "拒绝H0", "不拒绝H0")
+)
+one_sample_result
+```
+
+```{r one-sample-t-tail-plot, fig.width=7.2, fig.height=4.6}
+x <- seq(-4, 5, length.out = 2000)
+y <- dt(x, df = n1 - 1)
+plot(x, y, type = "l", lwd = 2, col = "#2c3e50",
+     main = "单样本 t 检验（右侧）",
+     xlab = "t 值", ylab = "密度")
+abline(v = t_crit, lty = 2, lwd = 2, col = "#e74c3c")
+abline(v = t_obs, lty = 3, lwd = 2, col = "#1f78b4")
+idx <- which(x >= t_crit)
+polygon(c(x[idx], rev(x[idx])), c(y[idx], rep(0, length(idx))),
+        col = adjustcolor("#e74c3c", alpha.f = 0.25), border = NA)
+legend("topright",
+       legend = c(paste0("t_obs = ", round(t_obs, 3)), paste0("t_crit = ", round(t_crit, 3))),
+       lty = c(3, 2), lwd = 2, col = c("#1f78b4", "#e74c3c"), bty = "n")
+```
+
+教学解释：
+
+- 当 \(t_{obs}>t_{crit}\) 时，观测值进入拒绝域，拒绝 \(H_0\)。
+- 本例中均值是否高于 70 分，取决于该判定而非口头描述。
+
+## 3.1 实际案例：医院质控（住院天数是否低于 7）
+
+\[
+H_0:\mu=7,\quad H_1:\mu<7,
+\quad T=\frac{\bar X-7}{S/\sqrt n}\sim t_{n-1}.
+\]
+
+左侧检验：
+\[
+A=[t_{\alpha,n-1},\infty),\quad R=(-\infty,t_{\alpha,n-1}).
+\]
+
+```{r hospital-length-of-stay}
+set.seed(2025)
+los <- pmax(round(rnorm(60, mean = 6.4, sd = 1.6), 1), 2.5)
+
+n_los <- length(los)
+mu0_los <- 7
+xbar_los <- mean(los)
+s_los <- sd(los)
+t_obs_los <- (xbar_los - mu0_los) / (s_los / sqrt(n_los))
+t_crit_los <- qt(alpha, df = n_los - 1)
+p_los <- pt(t_obs_los, df = n_los - 1)
+
+data.frame(
+  n = n_los,
+  mean_los = round(xbar_los, 3),
+  t_obs = round(t_obs_los, 3),
+  t_crit = round(t_crit_los, 3),
+  p_value = signif(p_los, 4),
+  decision = ifelse(t_obs_los < t_crit_los, "拒绝H0", "不拒绝H0")
+)
+```
+
+# 4. 两独立样本 Welch t 检验
+
+\[
+H_0:\mu_A-\mu_B=0,\quad H_1:\mu_A-\mu_B\neq 0.
+\]
+
+统计量：
+\[
+T=\frac{(\bar X_A-\bar X_B)-0}{\sqrt{S_A^2/n_A+S_B^2/n_B}}.
+\]
+
+双侧检验接受域：
+\[
+A=[-t_{1-\alpha/2,\nu}, t_{1-\alpha/2,\nu}],
+\quad R=\{|T|>t_{1-\alpha/2,\nu}\}.
+\]
+
+```{r two-sample-example}
+set.seed(123)
+group_A <- rnorm(35, mean = 78, sd = 7)
+group_B <- rnorm(33, mean = 74, sd = 7)
+
+nA <- length(group_A); nB <- length(group_B)
+mA <- mean(group_A); mB <- mean(group_B)
+sA2 <- var(group_A); sB2 <- var(group_B)
+
+se_diff <- sqrt(sA2 / nA + sB2 / nB)
+t_obs2 <- (mA - mB) / se_diff
+nu <- (sA2 / nA + sB2 / nB)^2 / ((sA2 / nA)^2 / (nA - 1) + (sB2 / nB)^2 / (nB - 1))
+t_crit2 <- qt(1 - alpha / 2, df = nu)
+p2 <- 2 * pt(abs(t_obs2), df = nu, lower.tail = FALSE)
+
+data.frame(
+  n_A = nA,
+  n_B = nB,
+  mean_A = round(mA, 3),
+  mean_B = round(mB, 3),
+  t_obs = round(t_obs2, 3),
+  t_crit = round(t_crit2, 3),
+  p_value = signif(p2, 4),
+  decision = ifelse(abs(t_obs2) > t_crit2, "拒绝H0", "不拒绝H0")
+)
+```
+
+## 4.1 实际案例：电商 A/B 停留时长
+
+```{r ab-test-dwell-time}
+set.seed(2026)
+dwell_A <- rnorm(400, mean = 82, sd = 28)
+dwell_B <- rnorm(410, mean = 86, sd = 29)
+
+nA2 <- length(dwell_A); nB2 <- length(dwell_B)
+mA2 <- mean(dwell_A); mB2 <- mean(dwell_B)
+sA2_2 <- var(dwell_A); sB2_2 <- var(dwell_B)
+
+se_ab <- sqrt(sA2_2 / nA2 + sB2_2 / nB2)
+t_obs_ab <- (mB2 - mA2) / se_ab
+nu_ab <- (sA2_2 / nA2 + sB2_2 / nB2)^2 / ((sA2_2 / nA2)^2 / (nA2 - 1) + (sB2_2 / nB2)^2 / (nB2 - 1))
+t_crit_ab <- qt(1 - alpha / 2, df = nu_ab)
+p_ab <- 2 * pt(abs(t_obs_ab), df = nu_ab, lower.tail = FALSE)
+
+data.frame(
+  mean_B_minus_A = round(mB2 - mA2, 3),
+  t_obs = round(t_obs_ab, 3),
+  t_crit = round(t_crit_ab, 3),
+  p_value = signif(p_ab, 4),
+  decision = ifelse(abs(t_obs_ab) > t_crit_ab, "拒绝H0", "不拒绝H0")
+)
+```
+
+# 5. 比例检验
+
+## 5.1 单比例右侧检验
+
+\[
+H_0:p=p_0,\quad H_1:p>p_0,
+\quad Z=\frac{\hat p-p_0}{\sqrt{p_0(1-p_0)/n}}\approx N(0,1).
+\]
+
+接受域：\(( -\infty, z_{1-\alpha}]\)，拒绝域：\((z_{1-\alpha},\infty)\)。
+
+```{r prop-example}
+success <- 68
+n <- 110
+p0 <- 0.5
+phat <- success / n
+z_obs <- (phat - p0) / sqrt(p0 * (1 - p0) / n)
+z_crit <- qnorm(1 - alpha)
+p_prop <- pnorm(z_obs, lower.tail = FALSE)
+
+data.frame(
+  phat = round(phat, 4),
+  z_obs = round(z_obs, 3),
+  z_crit = round(z_crit, 3),
+  p_value = signif(p_prop, 4),
+  decision = ifelse(z_obs > z_crit, "拒绝H0", "不拒绝H0")
+)
+```
+
+## 5.2 两比例双侧检验（临床缓解率）
+
+\[
+H_0:p_1=p_2,\quad H_1:p_1\neq p_2.
+\]
+
+合并比例
+\[
+\hat p=\frac{X_1+X_2}{n_1+n_2},
+\]
+统计量
+\[
+Z=\frac{\hat p_2-\hat p_1}{\sqrt{\hat p(1-\hat p)\left(\frac1{n_1}+\frac1{n_2}\right)}}\approx N(0,1).
+\]
+
+```{r clinical-two-proportion}
+resp <- c(54, 68)
+total <- c(120, 118)
+
+p1 <- resp[1] / total[1]
+p2 <- resp[2] / total[2]
+p_pool <- sum(resp) / sum(total)
+
+z_obs2 <- (p2 - p1) / sqrt(p_pool * (1 - p_pool) * (1 / total[1] + 1 / total[2]))
+z_crit2 <- qnorm(1 - alpha / 2)
+p_2prop <- 2 * pnorm(abs(z_obs2), lower.tail = FALSE)
+
+data.frame(
+  p_old = round(p1, 4),
+  p_new = round(p2, 4),
+  diff = round(p2 - p1, 4),
+  z_obs = round(z_obs2, 3),
+  z_crit = round(z_crit2, 3),
+  p_value = signif(p_2prop, 4),
+  decision = ifelse(abs(z_obs2) > z_crit2, "拒绝H0", "不拒绝H0")
+)
+```
+
+# 6. 接受域与拒绝域的统一判定
+
+## 6.1 判定模板
+
+1. 写出 \(H_0,H_1\)
+2. 写出统计量及其在 \(H_0\) 下分布
+3. 给出临界值与接受域
+4. 代入观测值，判断是否进入拒绝域
+
+## 6.2 结果总表（无区间指标）
+
+```{r results-summary-table}
+summary_table <- data.frame(
+  case = c(
+    "班级均值 > 70（单样本t）",
+    "住院天数 < 7（单样本t）",
+    "A/B学习组均值差（Welch t）",
+    "电商B版停留时长（Welch t）",
+    "单组有效率 > 50%（单比例）",
+    "临床两组缓解率差异（两比例）"
+  ),
+  statistic = c(t_obs, t_obs_los, t_obs2, t_obs_ab, z_obs, z_obs2),
+  critical_value = c(t_crit, t_crit_los, t_crit2, t_crit_ab, z_crit, z_crit2),
+  p_value = c(p_val, p_los, p2, p_ab, p_prop, p_2prop),
+  decision = c(
+    ifelse(t_obs > t_crit, "拒绝H0", "不拒绝H0"),
+    ifelse(t_obs_los < t_crit_los, "拒绝H0", "不拒绝H0"),
+    ifelse(abs(t_obs2) > t_crit2, "拒绝H0", "不拒绝H0"),
+    ifelse(abs(t_obs_ab) > t_crit_ab, "拒绝H0", "不拒绝H0"),
+    ifelse(z_obs > z_crit, "拒绝H0", "不拒绝H0"),
+    ifelse(abs(z_obs2) > z_crit2, "拒绝H0", "不拒绝H0")
+  )
+)
+
+summary_table$statistic <- round(summary_table$statistic, 3)
+summary_table$critical_value <- round(summary_table$critical_value, 3)
+summary_table$p_value <- signif(summary_table$p_value, 4)
+summary_table
+```
+
+# 7. 大样本下的小效应
+
+当样本量增大时，标准误下降，统计量可能增大；因此“小效应也可能显著”。
+
+```{r significant-but-small}
+set.seed(2026)
+n_big <- 5000
+x1 <- rnorm(n_big, mean = 100, sd = 15)
+x2 <- rnorm(n_big, mean = 99.4, sd = 15)
+
+m_diff <- mean(x1) - mean(x2)
+se_big <- sqrt(var(x1) / n_big + var(x2) / n_big)
+t_big <- m_diff / se_big
+nu_big <- (var(x1) / n_big + var(x2) / n_big)^2 / ((var(x1) / n_big)^2 / (n_big - 1) + (var(x2) / n_big)^2 / (n_big - 1))
+t_crit_big <- qt(1 - alpha / 2, df = nu_big)
+p_big <- 2 * pt(abs(t_big), df = nu_big, lower.tail = FALSE)
+
+data.frame(
+  mean_diff = round(m_diff, 4),
+  t_obs = round(t_big, 3),
+  t_crit = round(t_crit_big, 3),
+  p_value = signif(p_big, 4),
+  decision = ifelse(abs(t_big) > t_crit_big, "拒绝H0", "不拒绝H0")
+)
+```
+
+```{r significant-small-density, fig.width=7.2, fig.height=4.6}
+d1 <- density(x1)
+d2 <- density(x2)
+plot(d1, col = "#1f78b4", lwd = 2,
+     main = "大样本下：小效应也可能显著",
+     xlab = "取值", ylab = "密度")
+lines(d2, col = "#e31a1c", lwd = 2)
+abline(v = mean(x1), col = "#1f78b4", lty = 2, lwd = 2)
+abline(v = mean(x2), col = "#e31a1c", lty = 2, lwd = 2)
+legend("topright",
+       legend = c(
+         paste0("组1均值: ", round(mean(x1), 2)),
+         paste0("组2均值: ", round(mean(x2), 2)),
+         paste0("均值差: ", round(m_diff, 3))
+       ),
+       col = c("#1f78b4", "#e31a1c", "gray30"),
+       lwd = c(2, 2, NA), pch = c(NA, NA, 15), bty = "n")
+```
+
+# 8. 常见误区
+
+1. 把 p 值当成效应大小
+2. 只看“显著/不显著”而不看检验方向
+3. 不写接受域与判定过程
+4. 忽略样本量对显著性的放大作用
+
+# 9. 练习任务
+
+1. 将单样本检验改为双侧检验，写出新的接受域并比较结论。
+2. 把 A/B 案例样本量减半，观察统计量与判定变化。
+3. 为临床两比例案例改写一个左侧检验问题，并给出新的拒绝域。
+
+# 章末检查
+
+- 我能写出统计量、临界值、接受域和拒绝域
+- 我能根据统计量位置做判定
+- 我能解释“样本量变大时更容易显著”这一现象

@@ -10,6 +10,8 @@
 - 回归与分类
 - 数据可视化
 - 统计仿真
+- 统计入门（假设检验与置信区间分析）
+- 生物数据建模综合实验（预处理、相关性、回归、分类、检验、区间估计）
 - 生物统计常见数据、问题、模型与方法
 - 综合案例
 - AI 协作编程
@@ -38,6 +40,8 @@
 12. `11_case_studies`
 13. `12_ai_collaborative_programming`
 14. `13_capstone_protein_structure`
+15. `14_statistics_intro`
+16. `15_bio_dataset_modeling_lab`
 
 ## 产出物目标
 
@@ -47,3 +51,4 @@
   - B-factor 趋势图
   - Cα 距离热图（接触图）
   - 方法说明与可复现实验脚本
+

@@ -1,0 +1,391 @@
+﻿---
+title: "第15节：生物数据建模综合实验（预处理-相关性-回归-分类-检验）"
+author: "HuangJIn"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+---
+
+# 学习目标
+
+- 使用真实生物医学数据完成一次端到端统计建模实验
+- 掌握数据预处理、相关性分析、回归与分类的统一流程
+- 比较线性回归、多项式回归、全连接神经网络在回归任务上的差异
+- 通过假设检验与区间估计形成可解释的统计结论
+
+# 1. 数据集与任务定义
+
+本节使用 `survival` 包中的 `lung` 数据集（晚期肺癌临床数据）。  
+我们定义两个核心任务：
+
+1. 回归任务：预测生存时间 `time`（连续变量）
+2. 分类任务：预测是否发生死亡事件 `dead`（0/1）
+
+```{r setup}
+set.seed(20260412)
+library(survival)
+library(nnet)
+
+data(lung, package = "survival")
+raw <- lung[, c("time", "status", "age", "sex", "ph.ecog", "ph.karno", "wt.loss")]
+raw$dead <- ifelse(raw$status == 2, 1, 0)
+raw$sex <- factor(raw$sex, levels = c(1, 2), labels = c("male", "female"))
+
+str(raw)
+summary(raw)
+```
+
+# 2. 数据预处理
+
+## 2.1 缺失值与变量处理
+
+设原始特征向量为 \(x=(x_1,\dots,x_p)\)，中位数填补可写为：
+\[
+\tilde x_j=
+\begin{cases}
+\text{median}(x_j), & x_j\text{ 缺失}\\
+x_j, & \text{否则}
+\end{cases}
+\]
+
+标准化（用于神经网络）定义为：
+\[
+z_j = \frac{x_j-\mu_j}{s_j},
+\]
+其中 \(\mu_j\) 与 \(s_j\) 仅在训练集上估计。
+
+```{r preprocess}
+df <- raw
+
+# 删除关键变量缺失
+n_before <- nrow(df)
+df <- df[!is.na(df$time) & !is.na(df$dead), ]
+
+# 中位数填补
+num_impute <- c("age", "ph.ecog", "ph.karno", "wt.loss")
+for (col in num_impute) {
+  med <- median(df[[col]], na.rm = TRUE)
+  df[[col]][is.na(df[[col]])] <- med
+}
+
+n_after <- nrow(df)
+missing_after <- colSums(is.na(df))
+
+list(n_before = n_before, n_after = n_after, missing_after = missing_after)
+```
+
+## 2.2 训练集/测试集划分
+
+```{r split}
+set.seed(20260412)
+idx <- sample(seq_len(nrow(df)), size = round(0.7 * nrow(df)))
+train <- df[idx, ]
+test <- df[-idx, ]
+
+c(train_n = nrow(train), test_n = nrow(test))
+```
+
+# 3. 相关性分析
+
+Pearson 相关系数定义为：
+\[
+r_{XY}=\frac{\sum_{i=1}^n (x_i-\bar x)(y_i-\bar y)}
+{\sqrt{\sum_{i=1}^n (x_i-\bar x)^2}\sqrt{\sum_{i=1}^n (y_i-\bar y)^2}}.
+\]
+
+```{r correlation}
+num_vars <- df[, c("time", "age", "ph.ecog", "ph.karno", "wt.loss", "dead")]
+cor_mat <- round(cor(num_vars, method = "pearson"), 3)
+cor_mat
+```
+
+```{r correlation-tests}
+cor_age <- cor.test(df$time, df$age)
+cor_ecog <- cor.test(df$time, df$ph.ecog)
+cor_karno <- cor.test(df$time, df$ph.karno)
+cor_wt <- cor.test(df$time, df$wt.loss)
+
+data.frame(
+  feature = c("age", "ph.ecog", "ph.karno", "wt.loss"),
+  r = round(c(cor_age$estimate, cor_ecog$estimate, cor_karno$estimate, cor_wt$estimate), 3),
+  p_value = signif(c(cor_age$p.value, cor_ecog$p.value, cor_karno$p.value, cor_wt$p.value), 4)
+)
+```
+
+# 4. 回归实验（线性 / 多项式 / 全连接神经网络）
+
+## 4.1 模型公式推导
+
+线性回归模型：
+\[
+y_i=\beta_0+\sum_{j=1}^p\beta_j x_{ij}+\varepsilon_i,
+\quad \hat\beta=\arg\min_\beta \sum_{i=1}^n (y_i-\hat y_i)^2.
+\]
+
+多项式回归（以二次项为例）：
+\[
+y_i=\beta_0+\beta_1x_i+\beta_2x_i^2+\cdots+\varepsilon_i.
+\]
+
+全连接神经网络（单隐层）可写为：
+\[
+\hat y = W_2\,\sigma(W_1x+b_1)+b_2,
+\]
+其中 \(\sigma(\cdot)\) 为激活函数，参数通过最小化损失函数（如 MSE）迭代学习。
+
+## 4.2 回归建模与评估
+
+```{r regression-models}
+# 线性回归
+lm_fit <- lm(time ~ age + sex + ph.ecog + ph.karno + wt.loss, data = train)
+pred_lm <- predict(lm_fit, newdata = test)
+
+# 多项式回归
+poly_fit <- lm(
+  time ~ poly(age, 2, raw = TRUE) + poly(wt.loss, 2, raw = TRUE) + sex + ph.ecog + ph.karno,
+  data = train
+)
+pred_poly <- predict(poly_fit, newdata = test)
+
+# 全连接神经网络回归
+x_train <- model.matrix(~ age + sex + ph.ecog + ph.karno + wt.loss, data = train)[, -1]
+x_test <- model.matrix(~ age + sex + ph.ecog + ph.karno + wt.loss, data = test)[, -1]
+
+x_train_sc <- scale(x_train)
+x_test_sc <- scale(x_test, center = attr(x_train_sc, "scaled:center"), scale = attr(x_train_sc, "scaled:scale"))
+
+y_train <- train$time
+y_mean <- mean(y_train)
+y_sd <- sd(y_train)
+y_train_sc <- (y_train - y_mean) / y_sd
+
+set.seed(20260412)
+nn_reg <- nnet(
+  x = x_train_sc,
+  y = y_train_sc,
+  size = 6,
+  linout = TRUE,
+  decay = 0.01,
+  maxit = 1000,
+  trace = FALSE
+)
+
+pred_nn_sc <- predict(nn_reg, x_test_sc)
+pred_nn <- as.numeric(pred_nn_sc) * y_sd + y_mean
+
+metric_reg <- function(y_true, y_pred) {
+  rmse <- sqrt(mean((y_true - y_pred)^2))
+  mae <- mean(abs(y_true - y_pred))
+  r2 <- 1 - sum((y_true - y_pred)^2) / sum((y_true - mean(y_true))^2)
+  c(RMSE = rmse, MAE = mae, R2 = r2)
+}
+
+reg_cmp <- rbind(
+  linear = metric_reg(test$time, pred_lm),
+  polynomial = metric_reg(test$time, pred_poly),
+  neural_net = metric_reg(test$time, pred_nn)
+)
+round(reg_cmp, 4)
+```
+
+## 4.3 回归结果分析
+
+- 在线性可解释性方面，线性模型参数最直观；多项式模型可刻画非线性；神经网络灵活但可解释性较弱。  
+- 本次实验中，回归测试集指标如下（自动读取）：
+  - 线性回归：RMSE=`r round(reg_cmp["linear","RMSE"],2)`，MAE=`r round(reg_cmp["linear","MAE"],2)`，R2=`r round(reg_cmp["linear","R2"],3)`
+  - 多项式回归：RMSE=`r round(reg_cmp["polynomial","RMSE"],2)`，MAE=`r round(reg_cmp["polynomial","MAE"],2)`，R2=`r round(reg_cmp["polynomial","R2"],3)`
+  - 全连接神经网络：RMSE=`r round(reg_cmp["neural_net","RMSE"],2)`，MAE=`r round(reg_cmp["neural_net","MAE"],2)`，R2=`r round(reg_cmp["neural_net","R2"],3)`
+
+结论：就本数据和当前参数设置而言，`r rownames(reg_cmp)[which.min(reg_cmp[,"RMSE"])]` 在 RMSE 上表现最好。
+
+# 5. 分类实验（逻辑回归 vs 全连接神经网络）
+
+## 5.1 分类模型公式
+
+逻辑回归：
+\[
+\text{logit}(P(Y=1\mid x))=\beta_0+\sum_{j=1}^p\beta_jx_j.
+\]
+
+全连接神经网络分类（单隐层）可写为：
+\[
+\hat p=\sigma\left(W_2\,\sigma(W_1x+b_1)+b_2\right),
+\]
+其中输出 \(\hat p\in(0,1)\) 解释为事件概率。
+
+## 5.2 分类建模与评估
+
+```{r classification-models}
+calc_auc <- function(y_true, y_prob) {
+  ranks <- rank(y_prob, ties.method = "average")
+  n_pos <- sum(y_true == 1)
+  n_neg <- sum(y_true == 0)
+  if (n_pos == 0 || n_neg == 0) return(NA_real_)
+  (sum(ranks[y_true == 1]) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+}
+
+metric_cls <- function(y_true, y_prob, cutoff = 0.5) {
+  y_pred <- ifelse(y_prob >= cutoff, 1, 0)
+  tp <- sum(y_true == 1 & y_pred == 1)
+  tn <- sum(y_true == 0 & y_pred == 0)
+  fp <- sum(y_true == 0 & y_pred == 1)
+  fn <- sum(y_true == 1 & y_pred == 0)
+
+  acc <- (tp + tn) / length(y_true)
+  prec <- ifelse(tp + fp == 0, NA_real_, tp / (tp + fp))
+  rec <- ifelse(tp + fn == 0, NA_real_, tp / (tp + fn))
+  f1 <- ifelse(is.na(prec) || is.na(rec) || (prec + rec) == 0, NA_real_, 2 * prec * rec / (prec + rec))
+  auc <- calc_auc(y_true, y_prob)
+
+  c(Accuracy = acc, Precision = prec, Recall = rec, F1 = f1, AUC = auc)
+}
+
+# 逻辑回归
+logit_fit <- glm(dead ~ age + sex + ph.ecog + ph.karno + wt.loss, data = train, family = binomial())
+prob_logit <- predict(logit_fit, newdata = test, type = "response")
+
+# 全连接神经网络分类
+train_cls <- train
+train_cls$dead_f <- factor(train_cls$dead, levels = c(0, 1), labels = c("alive", "dead"))
+
+set.seed(20260412)
+nn_cls <- nnet(
+  dead_f ~ age + sex + ph.ecog + ph.karno + wt.loss,
+  data = train_cls,
+  size = 5,
+  decay = 0.01,
+  maxit = 1000,
+  trace = FALSE
+)
+
+prob_nn_mat <- predict(nn_cls, newdata = test, type = "raw")
+if (is.matrix(prob_nn_mat)) {
+  if ("dead" %in% colnames(prob_nn_mat)) {
+    prob_nn <- prob_nn_mat[, "dead"]
+  } else {
+    prob_nn <- prob_nn_mat[, ncol(prob_nn_mat)]
+  }
+} else {
+  prob_nn <- as.numeric(prob_nn_mat)
+}
+
+cls_cmp <- rbind(
+  logistic = metric_cls(test$dead, prob_logit),
+  neural_net = metric_cls(test$dead, prob_nn)
+)
+round(cls_cmp, 4)
+```
+
+## 5.3 分类结果分析
+
+- 逻辑回归可解释性强（系数可转化为 OR）；神经网络对复杂非线性关系更敏感。  
+- 本次实验中：
+  - Logistic：Accuracy=`r round(cls_cmp["logistic","Accuracy"],3)`，AUC=`r round(cls_cmp["logistic","AUC"],3)`
+  - Neural Net：Accuracy=`r round(cls_cmp["neural_net","Accuracy"],3)`，AUC=`r round(cls_cmp["neural_net","AUC"],3)`
+
+在当前划分下，`r rownames(cls_cmp)[which.max(cls_cmp[,"AUC"])]` 在 AUC 上更优。
+
+# 6. 假设检验
+
+## 6.1 生存时间按性别分组比较（Welch t 检验）
+
+检验问题：男性与女性生存时间均值是否存在差异？
+\[
+H_0:\mu_{male}=\mu_{female},\quad H_1:\mu_{male}\neq\mu_{female}.
+\]
+
+```{r hypothesis-t-test}
+t_sex <- t.test(time ~ sex, data = df, var.equal = FALSE)
+t_sex
+```
+
+## 6.2 死亡率按性别比较（两比例检验）
+
+\[
+H_0:p_{male}=p_{female},\quad H_1:p_{male}\neq p_{female}.
+\]
+
+```{r hypothesis-prop-test}
+male_dead <- sum(df$dead[df$sex == "male"])
+female_dead <- sum(df$dead[df$sex == "female"])
+male_n <- sum(df$sex == "male")
+female_n <- sum(df$sex == "female")
+
+prop_sex <- prop.test(x = c(male_dead, female_dead), n = c(male_n, female_n), correct = FALSE)
+prop_sex
+```
+
+## 6.3 检验结果分析
+
+- 性别生存时间均值检验 p 值：`r signif(t_sex$p.value,4)`。  
+- 性别死亡率差异检验 p 值：`r signif(prop_sex$p.value,4)`。  
+- 在 \(\alpha=0.05\) 下，
+  - 生存时间均值差异：`r ifelse(t_sex$p.value < 0.05, "显著", "不显著")`
+  - 死亡率差异：`r ifelse(prop_sex$p.value < 0.05, "显著", "不显著")`
+
+# 7. 区间估计
+
+## 7.1 均值区间（t 区间）
+
+对于总体均值 \(\mu\)，
+\[
+\bar X \pm t_{1-\alpha/2,n-1}\frac{S}{\sqrt n}.
+\]
+
+## 7.2 比例区间
+
+大样本下比例 \(p\) 可用近似区间
+\[
+\hat p \pm z_{1-\alpha/2}\sqrt{\frac{\hat p(1-\hat p)}{n}}.
+\]
+
+```{r interval-estimation}
+mean_ci <- t.test(df$time)$conf.int
+dead_ci <- binom.test(sum(df$dead), nrow(df))$conf.int
+
+interval_summary <- data.frame(
+  metric = c("mean_time", "dead_rate"),
+  estimate = c(mean(df$time), mean(df$dead)),
+  ci_low = c(mean_ci[1], dead_ci[1]),
+  ci_high = c(mean_ci[2], dead_ci[2])
+)
+interval_summary$estimate <- round(interval_summary$estimate, 4)
+interval_summary$ci_low <- round(interval_summary$ci_low, 4)
+interval_summary$ci_high <- round(interval_summary$ci_high, 4)
+interval_summary
+```
+
+区间估计解读：
+
+- 生存时间均值点估计：`r round(mean(df$time),2)`，95%CI=[`r round(mean_ci[1],2)`, `r round(mean_ci[2],2)`]
+- 死亡率点估计：`r round(mean(df$dead),3)`，95%CI=[`r round(dead_ci[1],3)`, `r round(dead_ci[2],3)`]
+
+# 8. 总结：三类回归 + 两类分类的优劣
+
+## 8.1 回归模型比较（本实验）
+
+1. 线性回归：解释性强、实现简单，对线性关系友好。
+2. 多项式回归：在保持较好解释性的同时捕获部分非线性。
+3. 全连接神经网络：表达能力强，但参数多、可解释性弱、对预处理敏感。
+
+## 8.2 分类模型比较（本实验）
+
+1. 逻辑回归：参数可解释（OR），适合临床结论表达。
+2. 全连接神经网络：在复杂边界下可能表现更好，但不易解释。
+
+## 8.3 方法选择建议
+
+- 若目标是“解释机制”：优先线性/逻辑回归。
+- 若目标是“预测精度”且样本量足够：可尝试神经网络并做验证。
+- 在生物统计场景中，建议“可解释模型 + 高性能模型”并行报告。
+
+# 章末检查
+
+- 我能从同一数据集中同时构建回归与分类任务
+- 我能写出线性、多项式、神经网络、逻辑回归的核心公式
+- 我能完成检验、区间估计并给出结果解释
+- 我能比较模型优劣并说明选择依据
