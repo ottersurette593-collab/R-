@@ -4,6 +4,7 @@ author: "HuangJIn"
 date: "`r Sys.Date()`"
 output:
   html_document:
+    self_contained: true
     toc: true
     toc_depth: 3
     number_sections: true
@@ -25,13 +26,43 @@ output:
 1. 回归任务：预测生存时间 `time`（连续变量）
 2. 分类任务：预测是否发生死亡事件 `dead`（0/1）
 
+## 1.1 研究背景与数据结构（详细）
+
+- 研究背景：`lung` 数据来自晚期肺癌患者临床随访，包含人口学信息、功能状态评分、体重变化与生存结局。  
+- 样本单位：单个患者。  
+- 响应变量（回归）：`time`，单位为天。  
+- 响应变量（分类）：`dead`，由 `status` 映射得到（死亡=1，其他=0）。  
+- 主要解释变量：`age`、`sex`、`ph.ecog`（ECOG 体能状态）、`ph.karno`（Karnofsky 评分）、`wt.loss`（体重变化）。  
+- 研究目标：在同一数据集上比较“解释性模型”和“灵活预测模型”的表现差异，并形成可解释的统计结论。
+
+## 1.2 本节任务清单（可报告版本）
+
+1. 数据预处理：缺失处理、变量编码、训练/测试划分、标准化。  
+2. 相关性分析：连续变量之间相关方向与显著性。  
+3. 回归建模：线性回归、多项式回归、全连接神经网络，对 `time` 做预测并比较误差。  
+4. 分类建模：逻辑回归、全连接神经网络，对 `dead` 做概率预测并比较分类指标。  
+5. 统计推断：完成组间假设检验并报告区间估计。  
+6. 结论整合：给出“何时优先解释、何时优先预测”的方法建议。
+
 ```{r setup}
 set.seed(20260412)
 library(survival)
-library(nnet)
+library(RSNNS)
+library(ggplot2)
 
-data(lung, package = "survival")
-raw <- lung[, c("time", "status", "age", "sex", "ph.ecog", "ph.karno", "wt.loss")]
+academic_theme <- theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "black", linewidth = 0.7)
+  )
+theme_set(academic_theme)
+
+raw <- survival::lung[, c("time", "status", "age", "sex", "ph.ecog", "ph.karno", "wt.loss")]
 raw$dead <- ifelse(raw$status == 2, 1, 0)
 raw$sex <- factor(raw$sex, levels = c(1, 2), labels = c("male", "female"))
 
@@ -39,7 +70,39 @@ str(raw)
 summary(raw)
 ```
 
+## 1.3 数据概览可视化
+
+```{r data-overview-plot, fig.width=7.2, fig.height=4.8}
+plot_df <- raw[!is.na(raw$time) & !is.na(raw$sex), ]
+
+ggplot(plot_df, aes(x = time)) +
+  geom_histogram(aes(y = after_stat(density), fill = "Histogram"), bins = 20, color = "white", alpha = 0.9) +
+  geom_density(aes(color = "Density"), linewidth = 1.0) +
+  scale_fill_manual(values = c(Histogram = "#4C78A8"), name = "Layer") +
+  scale_color_manual(values = c(Density = "#222222"), name = "Layer") +
+  labs(
+    title = "生存时间分布（含核密度曲线）",
+    x = "Survival Time (days)",
+    y = "Density"
+  )
+```
+
+```{r time-by-sex-boxplot, fig.width=7.2, fig.height=4.8}
+ggplot(plot_df, aes(x = sex, y = time, fill = sex)) +
+  geom_boxplot(width = 0.55, alpha = 0.85, outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.45, size = 1.4, color = "gray25") +
+  scale_fill_manual(values = c(male = "#1F4E79", female = "#A23B72")) +
+  labs(
+    title = "不同性别的生存时间分布",
+    x = "Sex",
+    y = "Survival Time (days)",
+    fill = "Sex"
+  )
+```
+
 # 2. 数据预处理
+
+问题描述：原始临床数据常见缺失与异构编码问题，若不统一处理会造成模型偏差或训练失败。本节目标是构建可复现、可直接用于建模的数据版本。
 
 ## 2.1 缺失值与变量处理
 
@@ -78,6 +141,29 @@ missing_after <- colSums(is.na(df))
 list(n_before = n_before, n_after = n_after, missing_after = missing_after)
 ```
 
+```{r missing-before-after-plot, fig.width=7.4, fig.height=4.8}
+vars_show <- c("time", "dead", "age", "sex", "ph.ecog", "ph.karno", "wt.loss")
+miss_before <- colSums(is.na(raw[, vars_show]))
+miss_after <- colSums(is.na(df[, vars_show]))
+
+miss_plot <- rbind(
+  data.frame(variable = names(miss_before), stage = "Before", missing_n = as.numeric(miss_before)),
+  data.frame(variable = names(miss_after), stage = "After", missing_n = as.numeric(miss_after))
+)
+miss_plot$stage <- factor(miss_plot$stage, levels = c("Before", "After"))
+
+ggplot(miss_plot, aes(x = variable, y = missing_n, fill = stage)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.65) +
+  scale_fill_manual(values = c(Before = "#B0BEC5", After = "#2E7D32")) +
+  labs(
+    title = "缺失值处理前后对比",
+    x = "Variable",
+    y = "Number of Missing Values",
+    fill = "Stage"
+  ) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
 ## 2.2 训练集/测试集划分
 
 ```{r split}
@@ -90,6 +176,8 @@ c(train_n = nrow(train), test_n = nrow(test))
 ```
 
 # 3. 相关性分析
+
+问题描述：在进入多模型实验前，先回答“哪些变量与生存时间线性相关、方向如何、显著性如何”，用于辅助特征理解与模型解释。
 
 Pearson 相关系数定义为：
 \[
@@ -116,7 +204,55 @@ data.frame(
 )
 ```
 
+```{r correlation-heatmap, fig.width=7.2, fig.height=6.2}
+cor_df <- as.data.frame(as.table(cor_mat))
+colnames(cor_df) <- c("Var1", "Var2", "corr")
+
+ggplot(cor_df, aes(x = Var1, y = Var2, fill = corr)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = sprintf("%.2f", corr)), size = 3.4) +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+  labs(
+    title = "相关系数热图（Pearson）",
+    x = NULL,
+    y = NULL,
+    fill = "r"
+  ) +
+  coord_equal() +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+```{r correlation-scatter-facet, fig.width=7.2, fig.height=5.8}
+scatter_df <- rbind(
+  data.frame(feature = "age", x = df$age, time = df$time),
+  data.frame(feature = "ph.ecog", x = df$ph.ecog, time = df$time),
+  data.frame(feature = "ph.karno", x = df$ph.karno, time = df$time),
+  data.frame(feature = "wt.loss", x = df$wt.loss, time = df$time)
+)
+
+ggplot(scatter_df, aes(x = x, y = time)) +
+  geom_point(aes(color = "Samples"), alpha = 0.55, size = 1.5) +
+  geom_smooth(aes(color = "Linear Fit"), method = "lm", se = TRUE, linewidth = 0.9) +
+  scale_color_manual(values = c("Samples" = "#355070", "Linear Fit" = "#E76F51"), name = "Layer") +
+  facet_wrap(~ feature, scales = "free_x", ncol = 2) +
+  labs(
+    title = "生存时间与关键特征的关系（含线性趋势）",
+    x = "Feature Value",
+    y = "Survival Time (days)"
+  )
+```
+
 # 4. 回归实验（线性 / 多项式 / 全连接神经网络）
+
+问题描述（回归任务）：
+
+- 研究问题：能否根据基线临床特征预测患者生存时间 `time`？  
+- 评价重点：预测误差（RMSE/MAE）与拟合解释程度（R2）。  
+- 比较目标：  
+  1. 线性回归：高可解释性基线；  
+  2. 多项式回归：引入有限非线性；  
+  3. 全连接神经网络：高表达能力但可解释性较弱。  
+- 判定原则：以测试集 RMSE 为主指标，MAE/R2 为辅助。
 
 ## 4.1 模型公式推导
 
@@ -131,9 +267,9 @@ y_i=\beta_0+\sum_{j=1}^p\beta_j x_{ij}+\varepsilon_i,
 y_i=\beta_0+\beta_1x_i+\beta_2x_i^2+\cdots+\varepsilon_i.
 \]
 
-全连接神经网络（单隐层）可写为：
+全连接神经网络（3 个隐藏层、每层 4 个节点）可写为：
 \[
-\hat y = W_2\,\sigma(W_1x+b_1)+b_2,
+\hat y = W_4\,\sigma\!\big(W_3\,\sigma(W_2\,\sigma(W_1x+b_1)+b_2)+b_3\big)+b_4,
 \]
 其中 \(\sigma(\cdot)\) 为激活函数，参数通过最小化损失函数（如 MSE）迭代学习。
 
@@ -142,6 +278,7 @@ y_i=\beta_0+\beta_1x_i+\beta_2x_i^2+\cdots+\varepsilon_i.
 ```{r regression-models}
 # 线性回归
 lm_fit <- lm(time ~ age + sex + ph.ecog + ph.karno + wt.loss, data = train)
+pred_lm_train <- predict(lm_fit, newdata = train)
 pred_lm <- predict(lm_fit, newdata = test)
 
 # 多项式回归
@@ -149,9 +286,10 @@ poly_fit <- lm(
   time ~ poly(age, 2, raw = TRUE) + poly(wt.loss, 2, raw = TRUE) + sex + ph.ecog + ph.karno,
   data = train
 )
+pred_poly_train <- predict(poly_fit, newdata = train)
 pred_poly <- predict(poly_fit, newdata = test)
 
-# 全连接神经网络回归
+# 全连接神经网络回归（3 隐藏层 x 每层 4 节点）
 x_train <- model.matrix(~ age + sex + ph.ecog + ph.karno + wt.loss, data = train)[, -1]
 x_test <- model.matrix(~ age + sex + ph.ecog + ph.karno + wt.loss, data = test)[, -1]
 
@@ -164,45 +302,155 @@ y_sd <- sd(y_train)
 y_train_sc <- (y_train - y_mean) / y_sd
 
 set.seed(20260412)
-nn_reg <- nnet(
-  x = x_train_sc,
-  y = y_train_sc,
-  size = 6,
-  linout = TRUE,
-  decay = 0.01,
-  maxit = 1000,
-  trace = FALSE
+nn_reg <- mlp(
+  x_train_sc,
+  matrix(y_train_sc, ncol = 1),
+  size = c(4, 4, 4),
+  maxit = 500,
+  learnFuncParams = c(0.05),
+  linOut = TRUE
 )
 
-pred_nn_sc <- predict(nn_reg, x_test_sc)
-pred_nn <- as.numeric(pred_nn_sc) * y_sd + y_mean
+pred_nn_train_sc <- as.numeric(predict(nn_reg, x_train_sc))
+pred_nn_sc <- as.numeric(predict(nn_reg, x_test_sc))
+pred_nn_train <- pred_nn_train_sc * y_sd + y_mean
+pred_nn <- pred_nn_sc * y_sd + y_mean
 
 metric_reg <- function(y_true, y_pred) {
+  mse <- mean((y_true - y_pred)^2)
   rmse <- sqrt(mean((y_true - y_pred)^2))
   mae <- mean(abs(y_true - y_pred))
   r2 <- 1 - sum((y_true - y_pred)^2) / sum((y_true - mean(y_true))^2)
-  c(RMSE = rmse, MAE = mae, R2 = r2)
+  c(MSE = mse, RMSE = rmse, MAE = mae, R2 = r2)
 }
 
-reg_cmp <- rbind(
+reg_cmp_train <- rbind(
+  linear = metric_reg(train$time, pred_lm_train),
+  polynomial = metric_reg(train$time, pred_poly_train),
+  neural_net = metric_reg(train$time, pred_nn_train)
+)
+
+reg_cmp_test <- rbind(
   linear = metric_reg(test$time, pred_lm),
   polynomial = metric_reg(test$time, pred_poly),
   neural_net = metric_reg(test$time, pred_nn)
 )
-round(reg_cmp, 4)
+reg_cmp <- reg_cmp_test
+round(reg_cmp_test, 4)
+```
+
+```{r regression-visual-comparison, fig.width=7.4, fig.height=5.4}
+sample_id <- seq_len(nrow(test))
+pred_plot <- rbind(
+  data.frame(model = "Linear", sample_id = sample_id, series = "Observed", value = test$time),
+  data.frame(model = "Linear", sample_id = sample_id, series = "Predicted", value = pred_lm),
+  data.frame(model = "Polynomial", sample_id = sample_id, series = "Observed", value = test$time),
+  data.frame(model = "Polynomial", sample_id = sample_id, series = "Predicted", value = pred_poly),
+  data.frame(model = "Neural Net", sample_id = sample_id, series = "Observed", value = test$time),
+  data.frame(model = "Neural Net", sample_id = sample_id, series = "Predicted", value = pred_nn)
+)
+pred_plot$model <- factor(pred_plot$model, levels = c("Linear", "Polynomial", "Neural Net"))
+pred_plot$series <- factor(pred_plot$series, levels = c("Observed", "Predicted"))
+
+ggplot(pred_plot, aes(x = sample_id, y = value, color = series, shape = series)) +
+  geom_point(alpha = 0.8, size = 1.8) +
+  facet_wrap(~ model, ncol = 3) +
+  scale_color_manual(values = c("Observed" = "#1F4E79", "Predicted" = "#C62828")) +
+  labs(
+    title = "回归任务：真实值与预测值样本点对比（测试集）",
+    x = "Sample Index (Test Set)",
+    y = "Survival Time (days)",
+    color = "Series",
+    shape = "Series"
+  )
+```
+
+```{r regression-metrics-comparison, fig.width=8.6, fig.height=7.0}
+to_long_metric <- function(mat, split_name) {
+  reg_metric_df <- data.frame(
+    model = rownames(mat),
+    split = split_name,
+    MSE = mat[, "MSE"],
+    MAE = mat[, "MAE"],
+    RMSE = mat[, "RMSE"],
+    row.names = NULL
+  )
+  rbind(
+    data.frame(model = reg_metric_df$model, split = reg_metric_df$split, metric = "MSE", value = reg_metric_df$MSE),
+    data.frame(model = reg_metric_df$model, split = reg_metric_df$split, metric = "MAE", value = reg_metric_df$MAE),
+    data.frame(model = reg_metric_df$model, split = reg_metric_df$split, metric = "RMSE", value = reg_metric_df$RMSE)
+  )
+}
+
+reg_metric_long <- rbind(
+  to_long_metric(reg_cmp_train, "Train"),
+  to_long_metric(reg_cmp_test, "Test")
+)
+reg_metric_long$model <- factor(reg_metric_long$model, levels = c("linear", "polynomial", "neural_net"),
+                                labels = c("Linear", "Polynomial", "Neural Net"))
+reg_metric_long$metric <- factor(reg_metric_long$metric, levels = c("MSE", "MAE", "RMSE"))
+reg_metric_long$split <- factor(reg_metric_long$split, levels = c("Train", "Test"))
+
+ggplot(reg_metric_long, aes(x = model, y = value, fill = model)) +
+  geom_col(width = 0.65, alpha = 0.88) +
+  geom_text(aes(label = sprintf("%.1f", value)), vjust = -0.35, size = 3.5) +
+  facet_grid(metric ~ split, scales = "free_y") +
+  scale_fill_manual(values = c("Linear" = "#1F77B4", "Polynomial" = "#2CA02C", "Neural Net" = "#D62728")) +
+  labs(
+    title = "回归模型误差指标对比（按指标自适应尺度）",
+    x = "Model",
+    y = "Metric Value",
+    fill = "Model"
+  ) +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1))
+```
+
+```{r regression-error-distribution, fig.width=7.2, fig.height=4.8}
+err_plot <- rbind(
+  data.frame(model = "Linear", error = pred_lm - test$time),
+  data.frame(model = "Polynomial", error = pred_poly - test$time),
+  data.frame(model = "Neural Net", error = pred_nn - test$time)
+)
+
+ggplot(err_plot, aes(x = model, y = error, fill = model)) +
+  geom_boxplot(alpha = 0.82, width = 0.62, outlier.shape = 16, outlier.size = 1.4) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray25") +
+  scale_fill_manual(values = c("Linear" = "#1F77B4", "Polynomial" = "#2CA02C", "Neural Net" = "#D62728")) +
+  labs(
+    title = "回归误差分布对比（预测值 - 真实值）",
+    x = "Model",
+    y = "Prediction Error",
+    fill = "Model"
+  )
 ```
 
 ## 4.3 回归结果分析
 
 - 在线性可解释性方面，线性模型参数最直观；多项式模型可刻画非线性；神经网络灵活但可解释性较弱。  
+- 图中误差指标已按“指标自适应尺度”显示，并将训练集（Train）与测试集（Test）分开，避免 MSE 量级压扁 MAE/RMSE。  
 - 本次实验中，回归测试集指标如下（自动读取）：
-  - 线性回归：RMSE=`r round(reg_cmp["linear","RMSE"],2)`，MAE=`r round(reg_cmp["linear","MAE"],2)`，R2=`r round(reg_cmp["linear","R2"],3)`
-  - 多项式回归：RMSE=`r round(reg_cmp["polynomial","RMSE"],2)`，MAE=`r round(reg_cmp["polynomial","MAE"],2)`，R2=`r round(reg_cmp["polynomial","R2"],3)`
-  - 全连接神经网络：RMSE=`r round(reg_cmp["neural_net","RMSE"],2)`，MAE=`r round(reg_cmp["neural_net","MAE"],2)`，R2=`r round(reg_cmp["neural_net","R2"],3)`
+  - 线性回归：MSE=`r round(reg_cmp["linear","MSE"],2)`，RMSE=`r round(reg_cmp["linear","RMSE"],2)`，MAE=`r round(reg_cmp["linear","MAE"],2)`，R2=`r round(reg_cmp["linear","R2"],3)`
+  - 多项式回归：MSE=`r round(reg_cmp["polynomial","MSE"],2)`，RMSE=`r round(reg_cmp["polynomial","RMSE"],2)`，MAE=`r round(reg_cmp["polynomial","MAE"],2)`，R2=`r round(reg_cmp["polynomial","R2"],3)`
+  - 全连接神经网络：MSE=`r round(reg_cmp["neural_net","MSE"],2)`，RMSE=`r round(reg_cmp["neural_net","RMSE"],2)`，MAE=`r round(reg_cmp["neural_net","MAE"],2)`，R2=`r round(reg_cmp["neural_net","R2"],3)`
+
+为什么本实验中神经网络提升不明显，甚至略差：
+
+1. 样本量相对较小。训练集约为 `r nrow(train)` 例，而 3 层网络参数较多，容易在有限样本上训练不稳定。  
+2. 特征数量少且关系偏“弱非线性”。本数据里变量不多（5 个主要输入），线性/低阶非线性模型已经能覆盖主要信号。  
+3. 结局变量存在较大噪声与异质性。`time` 受治疗方案、未观测临床因素影响明显，模型上限受数据噪声限制。  
+4. 当前是“单次划分 + 默认超参数”实验。神经网络通常需要更系统的超参数搜索（学习率、迭代轮数、正则化、早停）和交叉验证才能体现优势。  
+5. 生存时间本质上带删失机制，而这里把 `time` 当普通回归目标处理，信息利用不充分；这会削弱复杂模型的优势。  
 
 结论：就本数据和当前参数设置而言，`r rownames(reg_cmp)[which.min(reg_cmp[,"RMSE"])]` 在 RMSE 上表现最好。
 
 # 5. 分类实验（逻辑回归 vs 全连接神经网络）
+
+问题描述（分类任务）：
+
+- 研究问题：基于同一组临床特征，预测患者是否发生死亡事件（`dead`）。  
+- 输出形式：事件概率 \\(\\hat p\\) 与二分类标签。  
+- 比较指标：Accuracy、Precision、Recall、F1、AUC。  
+- 判定原则：以 AUC 作为主要比较指标，Accuracy/F1 作为辅助。
 
 ## 5.1 分类模型公式
 
@@ -211,9 +459,9 @@ round(reg_cmp, 4)
 \text{logit}(P(Y=1\mid x))=\beta_0+\sum_{j=1}^p\beta_jx_j.
 \]
 
-全连接神经网络分类（单隐层）可写为：
+全连接神经网络分类（3 个隐藏层、每层 4 个节点）可写为：
 \[
-\hat p=\sigma\left(W_2\,\sigma(W_1x+b_1)+b_2\right),
+\hat p=\sigma\!\left(W_4\,\sigma\!\big(W_3\,\sigma(W_2\,\sigma(W_1x+b_1)+b_2)+b_3\big)+b_4\right),
 \]
 其中输出 \(\hat p\in(0,1)\) 解释为事件概率。
 
@@ -248,29 +496,31 @@ metric_cls <- function(y_true, y_prob, cutoff = 0.5) {
 logit_fit <- glm(dead ~ age + sex + ph.ecog + ph.karno + wt.loss, data = train, family = binomial())
 prob_logit <- predict(logit_fit, newdata = test, type = "response")
 
-# 全连接神经网络分类
-train_cls <- train
-train_cls$dead_f <- factor(train_cls$dead, levels = c(0, 1), labels = c("alive", "dead"))
-
-set.seed(20260412)
-nn_cls <- nnet(
-  dead_f ~ age + sex + ph.ecog + ph.karno + wt.loss,
-  data = train_cls,
-  size = 5,
-  decay = 0.01,
-  maxit = 1000,
-  trace = FALSE
+# 全连接神经网络分类（3 隐藏层 x 每层 4 节点）
+x_train_cls <- model.matrix(~ age + sex + ph.ecog + ph.karno + wt.loss, data = train)[, -1]
+x_test_cls <- model.matrix(~ age + sex + ph.ecog + ph.karno + wt.loss, data = test)[, -1]
+x_train_cls_sc <- scale(x_train_cls)
+x_test_cls_sc <- scale(
+  x_test_cls,
+  center = attr(x_train_cls_sc, "scaled:center"),
+  scale = attr(x_train_cls_sc, "scaled:scale")
 )
 
-prob_nn_mat <- predict(nn_cls, newdata = test, type = "raw")
-if (is.matrix(prob_nn_mat)) {
-  if ("dead" %in% colnames(prob_nn_mat)) {
-    prob_nn <- prob_nn_mat[, "dead"]
-  } else {
-    prob_nn <- prob_nn_mat[, ncol(prob_nn_mat)]
-  }
+set.seed(20260412)
+nn_cls <- mlp(
+  x_train_cls_sc,
+  decodeClassLabels(train$dead),
+  size = c(4, 4, 4),
+  maxit = 500,
+  learnFuncParams = c(0.05),
+  linOut = FALSE
+)
+
+prob_nn_mat <- predict(nn_cls, x_test_cls_sc)
+prob_nn <- if (is.matrix(prob_nn_mat) && ncol(prob_nn_mat) >= 2) {
+  as.numeric(prob_nn_mat[, 2])
 } else {
-  prob_nn <- as.numeric(prob_nn_mat)
+  as.numeric(prob_nn_mat)
 }
 
 cls_cmp <- rbind(
@@ -278,6 +528,74 @@ cls_cmp <- rbind(
   neural_net = metric_cls(test$dead, prob_nn)
 )
 round(cls_cmp, 4)
+```
+
+```{r classification-roc, fig.width=7.2, fig.height=5.0}
+roc_points <- function(y_true, y_prob) {
+  ord <- order(y_prob, decreasing = TRUE)
+  y_sorted <- y_true[ord]
+  tp <- cumsum(y_sorted == 1)
+  fp <- cumsum(y_sorted == 0)
+  pos <- sum(y_true == 1)
+  neg <- sum(y_true == 0)
+  data.frame(
+    FPR = c(0, fp / neg, 1),
+    TPR = c(0, tp / pos, 1)
+  )
+}
+
+roc_logit <- roc_points(test$dead, prob_logit)
+roc_logit$model <- "Logistic"
+roc_nn <- roc_points(test$dead, prob_nn)
+roc_nn$model <- "Neural Net"
+roc_df <- rbind(roc_logit, roc_nn)
+
+ggplot(roc_df, aes(x = FPR, y = TPR, color = model)) +
+  geom_line(linewidth = 1.05) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray45") +
+  annotate("text", x = 0.62, y = 0.24, size = 4.0, hjust = 0,
+           label = paste0(
+             "AUC(Logistic) = ", round(cls_cmp["logistic", "AUC"], 3), "\n",
+             "AUC(Neural Net) = ", round(cls_cmp["neural_net", "AUC"], 3)
+           )) +
+  scale_color_manual(values = c("Logistic" = "#1B9E77", "Neural Net" = "#D95F02")) +
+  labs(
+    title = "ROC 曲线对比（分类任务）",
+    x = "False Positive Rate",
+    y = "True Positive Rate",
+    color = "Model"
+  ) +
+  coord_equal()
+```
+
+```{r classification-confusion, fig.width=7.4, fig.height=5.0}
+make_conf_df <- function(y_true, y_prob, model_name, cutoff = 0.5) {
+  y_pred <- ifelse(y_prob >= cutoff, 1, 0)
+  tab <- table(
+    Truth = factor(y_true, levels = c(0, 1), labels = c("Alive", "Dead")),
+    Pred = factor(y_pred, levels = c(0, 1), labels = c("Alive", "Dead"))
+  )
+  out <- as.data.frame(tab)
+  out$model <- model_name
+  out
+}
+
+cm_df <- rbind(
+  make_conf_df(test$dead, prob_logit, "Logistic"),
+  make_conf_df(test$dead, prob_nn, "Neural Net")
+)
+
+ggplot(cm_df, aes(x = Pred, y = Truth, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  geom_text(aes(label = Freq), size = 5.0) +
+  scale_fill_gradient(low = "#E8F1FA", high = "#1F4E79") +
+  facet_wrap(~ model) +
+  labs(
+    title = "混淆矩阵对比（cutoff = 0.5）",
+    x = "Predicted Label",
+    y = "True Label",
+    fill = "Count"
+  )
 ```
 
 ## 5.3 分类结果分析
@@ -290,6 +608,8 @@ round(cls_cmp, 4)
 在当前划分下，`r rownames(cls_cmp)[which.max(cls_cmp[,"AUC"])]` 在 AUC 上更优。
 
 # 6. 假设检验
+
+问题描述：在模型比较之外，需要回答临床上常见的“组间差异是否显著”问题。本节以性别分组为例，分别检验生存时间均值差异与死亡率差异。
 
 ## 6.1 生存时间按性别分组比较（Welch t 检验）
 
@@ -319,6 +639,34 @@ prop_sex <- prop.test(x = c(male_dead, female_dead), n = c(male_n, female_n), co
 prop_sex
 ```
 
+```{r hypothesis-group-visuals, fig.width=7.4, fig.height=5.2}
+mortality_by_sex <- do.call(
+  rbind,
+  lapply(levels(df$sex), function(s) {
+    n <- sum(df$sex == s)
+    k <- sum(df$dead[df$sex == s])
+    ci <- binom.test(k, n)$conf.int
+    data.frame(sex = s, rate = k / n, ci_low = ci[1], ci_high = ci[2], n = n)
+  })
+)
+
+p_time <- ggplot(df, aes(x = sex, y = time, fill = sex)) +
+  geom_violin(trim = FALSE, alpha = 0.4, color = NA) +
+  geom_boxplot(width = 0.16, outlier.alpha = 0.45, alpha = 0.82) +
+  scale_fill_manual(values = c(male = "#1F4E79", female = "#A23B72")) +
+  labs(title = "生存时间按性别分布", x = "Sex", y = "Survival Time (days)", fill = "Sex")
+
+p_rate <- ggplot(mortality_by_sex, aes(x = sex, y = rate, fill = sex)) +
+  geom_col(width = 0.58, alpha = 0.85) +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.12, linewidth = 0.85) +
+  scale_fill_manual(values = c(male = "#1F4E79", female = "#A23B72")) +
+  labs(title = "死亡率按性别比较（含95%区间）", x = "Sex", y = "Death Rate") +
+  coord_cartesian(ylim = c(0, 1))
+
+p_time
+p_rate
+```
+
 ## 6.3 检验结果分析
 
 - 性别生存时间均值检验 p 值：`r signif(t_sex$p.value,4)`。  
@@ -328,6 +676,8 @@ prop_sex
   - 死亡率差异：`r ifelse(prop_sex$p.value < 0.05, "显著", "不显著")`
 
 # 7. 区间估计
+
+问题描述：除显著性检验外，还需报告参数估计的不确定性范围，以支持医学解释与决策沟通。
 
 ## 7.1 均值区间（t 区间）
 
@@ -359,6 +709,41 @@ interval_summary$ci_high <- round(interval_summary$ci_high, 4)
 interval_summary
 ```
 
+```{r interval-visualization, fig.width=7.4, fig.height=5.2}
+mean_ci_by_sex <- do.call(
+  rbind,
+  lapply(levels(df$sex), function(s) {
+    x <- df$time[df$sex == s]
+    ci <- t.test(x)$conf.int
+    data.frame(sex = s, estimate = mean(x), ci_low = ci[1], ci_high = ci[2])
+  })
+)
+
+prop_ci_by_sex <- do.call(
+  rbind,
+  lapply(levels(df$sex), function(s) {
+    n <- sum(df$sex == s)
+    k <- sum(df$dead[df$sex == s])
+    ci <- binom.test(k, n)$conf.int
+    data.frame(sex = s, estimate = k / n, ci_low = ci[1], ci_high = ci[2])
+  })
+)
+
+p_mean_ci <- ggplot(mean_ci_by_sex, aes(x = sex, y = estimate, color = sex)) +
+  geom_pointrange(aes(ymin = ci_low, ymax = ci_high), linewidth = 0.9, size = 0.7) +
+  scale_color_manual(values = c(male = "#1F4E79", female = "#A23B72")) +
+  labs(title = "平均生存时间区间估计（按性别）", x = "Sex", y = "Mean Survival Time (days)", color = "Sex")
+
+p_prop_ci <- ggplot(prop_ci_by_sex, aes(x = sex, y = estimate, color = sex)) +
+  geom_pointrange(aes(ymin = ci_low, ymax = ci_high), linewidth = 0.9, size = 0.7) +
+  scale_color_manual(values = c(male = "#1F4E79", female = "#A23B72")) +
+  labs(title = "死亡率区间估计（按性别）", x = "Sex", y = "Death Rate") +
+  coord_cartesian(ylim = c(0, 1))
+
+p_mean_ci
+p_prop_ci
+```
+
 区间估计解读：
 
 - 生存时间均值点估计：`r round(mean(df$time),2)`，95%CI=[`r round(mean_ci[1],2)`, `r round(mean_ci[2],2)`]
@@ -382,6 +767,124 @@ interval_summary
 - 若目标是“解释机制”：优先线性/逻辑回归。
 - 若目标是“预测精度”且样本量足够：可尝试神经网络并做验证。
 - 在生物统计场景中，建议“可解释模型 + 高性能模型”并行报告。
+
+# 9. 课后作业：撰写一篇小论文
+
+作业任务：将本节实验整理为一篇完整小论文（建议 3000-5000 字），主题可定为“基于肺癌临床数据的回归与分类建模比较研究”。
+
+## 9.1 建议论文结构（可直接套用）
+
+1. 引言（Introduction）  
+说明研究背景、问题意义与本文研究目标：为什么要同时做回归（`time`）和分类（`dead`）任务。
+
+2. 数据与方法（Materials and Methods）  
+写清数据来源、样本量、变量定义、缺失值处理、训练测试划分、标准化步骤，并给出核心模型公式（线性/多项式/三隐藏层神经网络、逻辑回归）。
+
+3. 结果（Results）  
+按“数据概览 -> 相关性 -> 回归结果 -> 分类结果 -> 检验与区间估计”展开，图表为主、文字解释为辅。  
+要求明确报告 Train/Test 的关键指标（MSE、MAE、RMSE、R2、AUC 等）。
+
+4. 讨论（Discussion）  
+解释模型差异的原因，讨论神经网络在本数据上优势不明显的可能机制，并分析研究限制（样本量、删失信息、超参数、单次划分等）。
+
+5. 结论（Conclusion）  
+用 3-5 条结论回答研究问题，指出本实验在生物统计实践中的启发和后续改进方向。
+
+## 9.2 提交要求
+
+1. 提交文件  
+提交 1 个主文档：`mini_paper.pdf`（或 `mini_paper.docx`），以及 1 个复现实验脚本：`analysis.R`（或 `analysis.Rmd`）。
+
+2. 图表规范  
+每张图必须有图题、坐标轴名称、图例与必要单位；正文中需引用图表并解释“它支持了什么结论”。
+
+3. 结果报告规范  
+核心指标需同时给出训练集与测试集结果，并在文字中解释泛化表现，避免只报数值不解释。
+
+4. 学术写作规范  
+采用学术语言，术语前后一致；方法、结果、讨论分段清楚；结论必须由结果支撑，不得主观下结论。
+
+5. 可复现性  
+保证他人能按你提供的脚本复现主要结果；若有随机性，请固定随机种子并在文中注明。
+
+## 9.3 新增要求：插图达到科研论文质量
+
+1. 所有插图必须统一风格  
+包括统一字体、字号、配色、线宽、图例位置与边距，避免同一论文中图形风格混乱。
+
+2. 所有插图必须信息完整  
+每图需包含图题、坐标轴名称、图例、单位（如适用），并保证缩放后文字仍清晰可读。
+
+3. 所有插图必须满足投稿级导出质量  
+建议同时导出：
+- 矢量图：`PDF/SVG`（优先用于线图、散点图、统计图）
+- 位图：`TIFF/PNG`，分辨率建议 `>=300 dpi`（部分期刊建议 `600 dpi`）
+
+4. 所有插图必须服务于结论  
+正文中每张图都要回答一个明确问题（例如“哪一个模型在测试集上误差更低”），禁止“只展示不解释”。
+
+5. 在线教程（参考）  
+[ggpubr: ggplot2-Based Publication Ready Plots](https://rpkgs.datanovia.com/ggpubr/index.html)
+
+## 9.4 论文级插图示例
+
+```{r paper-figure-example-1, fig.width=7.2, fig.height=4.8}
+ggplot(df, aes(x = ph.karno, y = time, color = sex)) +
+  geom_point(alpha = 0.65, size = 2.0) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.9) +
+  scale_color_manual(values = c(male = "#1F4E79", female = "#A23B72")) +
+  labs(
+    title = "示例图1：Karnofsky评分与生存时间关系",
+    x = "Karnofsky Score",
+    y = "Survival Time (days)",
+    color = "Sex"
+  ) +
+  theme(
+    legend.position = c(0.86, 0.82),
+    legend.background = element_rect(fill = "white", color = "grey70")
+  )
+```
+
+```{r paper-figure-example-2, fig.width=7.0, fig.height=4.8}
+coef_tbl <- data.frame(
+  term = rownames(summary(lm_fit)$coefficients),
+  estimate = summary(lm_fit)$coefficients[, "Estimate"],
+  stringsAsFactors = FALSE
+)
+ci_tbl <- as.data.frame(confint(lm_fit))
+ci_tbl$term <- rownames(ci_tbl)
+colnames(ci_tbl)[1:2] <- c("ci_low", "ci_high")
+coef_tbl <- merge(coef_tbl, ci_tbl, by = "term")
+coef_tbl <- subset(coef_tbl, term != "(Intercept)")
+coef_tbl$term <- factor(coef_tbl$term, levels = rev(coef_tbl$term))
+
+ggplot(coef_tbl, aes(x = term, y = estimate)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_pointrange(aes(ymin = ci_low, ymax = ci_high), color = "#1F4E79", linewidth = 0.8) +
+  coord_flip() +
+  labs(
+    title = "示例图2：线性回归系数及95%CI",
+    x = "Predictor",
+    y = "Coefficient Estimate"
+  )
+```
+
+```{r paper-figure-example-3, fig.width=7.2, fig.height=4.8}
+resid_df <- data.frame(
+  fitted = fitted(lm_fit),
+  resid = residuals(lm_fit)
+)
+
+ggplot(resid_df, aes(x = fitted, y = resid)) +
+  geom_point(color = "#2E7D32", alpha = 0.7, size = 1.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray35", linewidth = 0.8) +
+  geom_smooth(method = "loess", se = FALSE, color = "#B71C1C", linewidth = 0.9) +
+  labs(
+    title = "示例图3：残差诊断图（线性回归）",
+    x = "Fitted Value",
+    y = "Residual"
+  )
+```
 
 # 章末检查
 
